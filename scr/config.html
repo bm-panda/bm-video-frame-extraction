@@ -1,0 +1,376 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视频抽帧 - 配置</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: flex;
+    padding: 20px;
+    background: #f1f5f9;
+    color: #1e293b;
+    font-family: -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+    font-size: 14px;
+  }
+  .card {
+    width: 100%;
+    max-width: 448px;
+    margin: auto;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 16px;
+    box-shadow: 0 10px 15px -3px rgba(0,0,0,.1), 0 4px 6px -4px rgba(0,0,0,.1);
+    padding: 24px;
+  }
+  h1 { margin: 0; font-size: 20px; color: #0f172a; }
+  .subtitle { margin: 4px 0 0; font-size: 13px; color: #64748b; }
+  .section-label { display: block; margin: 24px 0 8px; font-size: 12px; font-weight: 600; color: #64748b; }
+  .mode-seg {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    padding: 4px;
+  }
+  .mode-btn {
+    padding: 7px 0;
+    border: 0;
+    border-radius: 8px;
+    font-size: 13px;
+    cursor: pointer;
+    background: transparent;
+    color: #64748b;
+    transition: color .15s, background-color .15s;
+  }
+  .mode-btn:hover { color: #1e293b; }
+  .mode-btn.active { background: #2563eb; color: #fff; font-weight: 600; }
+  .param-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 16px; }
+  .param-card > * + * { margin-top: 12px; }
+  .field-label { display: block; margin-bottom: 6px; font-size: 12px; color: #64748b; }
+  .input, .select {
+    width: 100%;
+    padding: 8px 12px;
+    background: #fff;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    font-size: 14px;
+    color: inherit;
+  }
+  .input::placeholder { color: #94a3b8; }
+  .input:focus, .select:focus {
+    outline: none;
+    border-color: #3b82f6;
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, .3);
+  }
+  .select {
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 34px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 16 16'%3E%3Cpath d='M4 6l4 4 4-4' fill='none' stroke='%2364748b' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    background-size: 16px;
+  }
+  .hint { margin: 6px 0 0; font-size: 12px; color: #94a3b8; }
+  .check-row { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+  .check-row label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #334155; cursor: pointer; }
+  .check-row input[type="checkbox"] { width: 15px; height: 15px; accent-color: #2563eb; }
+  .actions { display: flex; gap: 10px; margin-top: 24px; }
+  .btn {
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 10px 0;
+  }
+  .btn-primary { flex: 1; border: 0; background: #2563eb; color: #fff; font-weight: 600; }
+  .btn-primary:hover { background: #1d4ed8; }
+  .btn-secondary { padding: 10px 20px; border: 1px solid #cbd5e1; background: transparent; color: #64748b; }
+  .btn-secondary:hover { color: #334155; border-color: #94a3b8; }
+  .error-box {
+    display: block;
+    margin-top: 16px;
+    padding: 8px 12px;
+    background: #fef2f2;
+    border: 1px solid #fecaca;
+    border-radius: 8px;
+    color: #dc2626;
+    font-size: 12px;
+  }
+  .hidden { display: none !important; }
+  .tips { margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0; }
+  .tip { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; color: #94a3b8; }
+  .dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .dot-green { background: #10b981; }
+  .dot-blue { background: #3b82f6; }
+  .dot-gray { background: #94a3b8; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>视频抽帧</h1>
+    <p class="subtitle">保存配置后，选中视频文件，右键点击即可一键抽帧</p>
+
+    <label class="section-label">抽取方式</label>
+    <div id="modeSeg" class="mode-seg"></div>
+
+    <label class="section-label">抽帧参数</label>
+    <div class="param-card">
+      <div id="row-interval">
+        <label for="interval" id="intervalLabel" class="field-label">间隔(秒)：</label>
+        <select id="interval" class="select"></select>
+      </div>
+      <div id="row-timestamps">
+        <label for="timestamps" class="field-label">时间点(逗号分隔)</label>
+        <input id="timestamps" class="input" type="text" placeholder="如 00:00:05,00:00:15,00:01:00">
+      </div>
+      <div id="row-keyframe">
+        <p class="hint">直接抽取全部关键帧，无需参数</p>
+      </div>
+      <div id="row-threshold">
+        <label for="threshold" class="field-label">相似度阈值</label>
+        <select id="threshold" class="select"></select>
+        <p class="hint">与上一张已存帧比较相似度，阈值越高保留帧越多</p>
+      </div>
+      <div id="row-smart-extra">
+        <div class="check-row">
+          <label><input id="refine" type="checkbox"> 检测幻灯片文字变化(refine)</label>
+          <label><input id="openEyes" type="checkbox"> 仅保留睁眼帧</label>
+        </div>
+        <div>
+          <label for="smartStart" class="field-label">起始时间(秒)</label>
+          <input id="smartStart" class="input" type="text" inputmode="decimal" placeholder="留空为 0，从该时间点开始抽帧">
+        </div>
+      </div>
+    </div>
+
+    <label class="section-label">输出目录</label>
+    <input id="outputDir" class="input" type="text" placeholder="留空则在视频目录下建 <视频名>_frames 文件夹">
+    <p class="hint">提示：可在文件资源管理器地址栏复制文件夹路径，粘贴到这里</p>
+
+    <div class="check-row" style="margin-top: 16px;">
+      <label><input id="overwrite" type="checkbox"> 覆盖已存在的文件</label>
+    </div>
+
+    <div class="actions">
+      <button id="saveBtn" class="btn btn-primary">保存配置</button>
+      <button id="cancelBtn" class="btn btn-secondary">取消</button>
+    </div>
+
+    <div id="errorBox" class="error-box hidden"></div>
+
+    <div class="tips">
+      <p class="tip"><span class="dot dot-green"></span>保存配置后，选中视频文件 → 右键 → 视频抽帧</p>
+      <p class="tip"><span class="dot dot-blue"></span>支持智能 / 按秒 / 固定间隔帧 / 指定时间点 / 关键帧</p>
+      <p class="tip"><span class="dot dot-gray"></span>需通过「不忙脚本盒子」安装脚本才能使用右键功能</p>
+    </div>
+  </div>
+
+<script>
+/*__APP_DATA__*/
+
+const S = APP_DATA.saved || {};
+const D = APP_DATA.DEFAULTS || {};
+const val = (k, fb) =>
+  (S[k] !== undefined && S[k] !== null && String(S[k]).trim() !== '')
+    ? S[k]
+    : (fb !== undefined ? fb : D[k]);
+
+const $ = (id) => document.getElementById(id);
+
+let currentMode = Object.keys(APP_DATA.MODES)[0];
+if (S.mode && S.mode in APP_DATA.MODES) currentMode = S.mode;
+
+// ── 抽取方式分段按钮 ──
+const modeSeg = $('modeSeg');
+for (const key of Object.keys(APP_DATA.MODES)) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'mode-btn' + (key === currentMode ? ' active' : '');
+  b.dataset.mode = key;
+  b.textContent = APP_DATA.MODES[key];
+  b.addEventListener('click', () => showMode(key));
+  modeSeg.appendChild(b);
+}
+
+// ── 间隔下拉（second/frame 共用，选项随模式切换） ──
+let intervalInited = false;
+function setupInterval(key) {
+  const list = key === 'second'
+    ? APP_DATA.ALLOWED_SECOND_INTERVALS
+    : APP_DATA.ALLOWED_FRAME_INTERVALS;
+  $('intervalLabel').textContent = key === 'second' ? '间隔(秒)：' : '间隔(帧)：';
+  const sel = $('interval');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  for (const v of list) {
+    const o = document.createElement('option');
+    o.value = String(v);
+    o.textContent = String(v) + (key === 'second' ? ' 秒' : ' 帧');
+    sel.appendChild(o);
+  }
+  if (intervalInited) {
+    if (!list.map(String).includes(prev)) sel.value = String(list[Math.floor(list.length / 2)]);
+  } else {
+    const saved = String(val('interval', ''));
+    sel.value = list.map(String).includes(saved) ? saved : String(list[Math.floor(list.length / 2)]);
+    intervalInited = true;
+  }
+}
+
+// ── 阈值下拉（smart） ──
+const thSel = $('threshold');
+for (const v of APP_DATA.ALLOWED_SMART_THRESHOLDS) {
+  const o = document.createElement('option');
+  o.value = String(v);
+  o.textContent = String(v);
+  thSel.appendChild(o);
+}
+{
+  const saved = String(val('threshold', '0.78'));
+  thSel.value = APP_DATA.ALLOWED_SMART_THRESHOLDS.map(String).includes(saved) ? saved : '0.78';
+}
+
+function setRow(id, show) {
+  const el = $(id);
+  if (el) el.style.display = show ? '' : 'none';
+}
+
+function showMode(key) {
+  currentMode = key;
+  for (const b of modeSeg.querySelectorAll('button')) {
+    b.classList.toggle('active', b.dataset.mode === key);
+  }
+  setRow('row-interval', key === 'second' || key === 'frame');
+  setRow('row-timestamps', key === 'timestamp');
+  setRow('row-keyframe', key === 'keyframe');
+  setRow('row-threshold', key === 'smart');
+  setRow('row-smart-extra', key === 'smart');
+  if (key === 'second' || key === 'frame') setupInterval(key);
+  clearError();
+}
+
+// ── 回填已保存值 ──
+$('timestamps').value = val('timestamps', '');
+$('smartStart').value = val('smart_start', '');
+$('refine').checked = !!S.smart_refine;
+$('openEyes').checked = !!S.smart_open_eyes;
+$('outputDir').value = S.output_dir || '';
+$('overwrite').checked = !!S.overwrite;
+
+// ── 校验（与 Python 侧规则一致） ──
+function parseTime(s) {
+  s = String(s).trim();
+  if (s.includes(':')) {
+    const parts = s.split(':');
+    if (parts.length !== 2 && parts.length !== 3) return null;
+    const vals = parts.map(x => parseFloat(x));
+    if (vals.some(v => !isFinite(v))) return null;
+    if (vals.length === 3) return vals[0] * 3600 + vals[1] * 60 + vals[2];
+    return vals[0] * 60 + vals[1];
+  }
+  const v = parseFloat(s);
+  return isFinite(v) ? v : null;
+}
+
+function validate() {
+  const errors = [];
+  if (currentMode === 'second' || currentMode === 'frame') {
+    const v = parseFloat($('interval').value);
+    if (!isFinite(v) || v < 1) errors.push('间隔必须为不小于 1 的数字');
+  } else if (currentMode === 'timestamp') {
+    const raw = $('timestamps').value.trim().replace(/，/g, ',');
+    const parts = raw.split(',').map(x => x.trim()).filter(Boolean);
+    if (!parts.length) {
+      errors.push('请填写至少一个时间点');
+    } else {
+      for (const p of parts) {
+        if (parseTime(p) === null) { errors.push('无效的时间格式：' + p); break; }
+      }
+    }
+  } else if (currentMode === 'smart') {
+    const start = $('smartStart').value.trim();
+    if (start !== '') {
+      const v = parseFloat(start);
+      if (!isFinite(v) || v < 0) errors.push('起始时间必须为不小于 0 的数字');
+    }
+  }
+  return errors;
+}
+
+function buildConfig() {
+  const cfg = {
+    mode: currentMode,
+    output_dir: $('outputDir').value.trim(),
+    overwrite: $('overwrite').checked,
+  };
+  if (currentMode === 'second' || currentMode === 'frame') {
+    cfg.interval = $('interval').value;
+  } else {
+    cfg.interval = val('interval');
+  }
+  if (currentMode === 'timestamp') {
+    cfg.timestamps = $('timestamps').value.trim().replace(/，/g, ',');
+  } else {
+    cfg.timestamps = val('timestamps', '');
+  }
+  if (currentMode === 'smart') {
+    cfg.threshold = $('threshold').value;
+    cfg.smart_refine = $('refine').checked;
+    cfg.smart_open_eyes = $('openEyes').checked;
+    cfg.smart_start = $('smartStart').value.trim();
+  } else {
+    cfg.threshold = val('threshold');
+    cfg.smart_refine = !!S.smart_refine;
+    cfg.smart_open_eyes = !!S.smart_open_eyes;
+    cfg.smart_start = val('smart_start', '');
+  }
+  return cfg;
+}
+
+function showErrors(list) {
+  const box = $('errorBox');
+  box.textContent = list.join('；');
+  box.classList.remove('hidden');
+}
+function clearError() {
+  $('errorBox').classList.add('hidden');
+}
+
+function submit(config) {
+  if (window.webview && window.webview.resolve) {
+    window.webview.resolve(config);
+  } else {
+    console.log('[video-frame] config:', JSON.stringify(config));
+  }
+}
+function doCancel() {
+  if (window.webview && window.webview.reject) {
+    window.webview.reject('已取消');
+  } else {
+    window.close();
+  }
+}
+
+$('saveBtn').addEventListener('click', () => {
+  const errors = validate();
+  if (errors.length) { showErrors(errors); return; }
+  submit(buildConfig());
+});
+$('cancelBtn').addEventListener('click', doCancel);
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') $('saveBtn').click();
+  else if (e.key === 'Escape') doCancel();
+});
+
+showMode(currentMode);
+</script>
+</body>
+</html>

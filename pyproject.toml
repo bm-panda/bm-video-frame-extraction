@@ -1,0 +1,10 @@
+[project]
+name = "video-frame"
+version = "1.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "distant-frames>=0.4.0",
+    # distant-frames 依赖 opencv-python>=4.10 但 5.x 移除了 HOGDescriptor，需钉在 4.x
+    "opencv-python>=4.10,<5",
+]
+
