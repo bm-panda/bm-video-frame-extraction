@@ -4,7 +4,7 @@
 id = "9d2c6b4a-1e8f-4a3c-9b7d-5c0e2f8a41b3"
 name = "视频抽帧"
 desc = "基于 FFmpeg 的视频抽帧脚本 | 支持按秒/按帧间隔、指定时间点、关键帧、智能抽帧(相似度去重),输出 PNG 图片序列,一键批量抽帧"
-version = "1.2.0"
+version = "1.3.0"
 icon = "./imgs/img.png"
 
 [bmscriptsbox.runtime]
@@ -28,6 +28,6 @@ filters = [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".ts", ".m4v
 
 [[bmscriptsbox.inputs]]
 name = "target_paths"
-type = "file"
+type = "list"
 exts = [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".ts", ".m4v",
         ".mpg", ".mpeg", ".m2ts", ".mts", ".3gp", ".ogv", ".vob", ".rmvb", ".rm", ".asf"]
