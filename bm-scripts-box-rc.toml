@@ -3,16 +3,25 @@
 [bmscriptsbox.info]
 id = "9d2c6b4a-1e8f-4a3c-9b7d-5c0e2f8a41b3"
 name = "视频抽帧"
-desc = "基于 FFmpeg 的视频抽帧脚本 | 支持按秒/按帧间隔、指定时间点、关键帧、智能抽帧(相似度去重),输出 PNG 图片序列,一键批量抽帧"
-version = "1.3.0"
+desc = "基于 FFmpeg 的视频抽帧脚本 | 支持按秒/按帧间隔、指定时间点、关键帧、智能抽帧(相似度去重),输出 PNG 图片序列,一键批量抽帧;可作节点被联动调用,支持定时任务"
+version = "2.1.0"
 icon = "./imgs/img.png"
 
 [bmscriptsbox.runtime]
 language = "python"
 language_version = ">=3.12"
 entry = "main.py"
-terminal = "inverse"
-binaries = [{name = "ffmpeg"}, {name="webview-cli"}]
+terminal = "always"
+binaries = [{name = "ffmpeg"}]
+
+[[bmscriptsbox.inputs]]
+name = "target_paths"
+type = "list"
+pick = "files"
+exts = [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".ts", ".m4v",
+        ".mpg", ".mpeg", ".m2ts", ".mts", ".3gp", ".ogv", ".vob", ".rmvb", ".rm", ".asf"]
+label = "视频文件"
+description = "要抽帧的视频文件"
 
 [bmscriptsbox.triggers.context_menu]
 enabled = true
@@ -26,8 +35,96 @@ input_type = "files"
 filters = [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".ts", ".m4v",
            ".mpg", ".mpeg", ".m2ts", ".mts", ".3gp", ".ogv", ".vob", ".rmvb", ".rm", ".asf"]
 
-[[bmscriptsbox.inputs]]
-name = "target_paths"
+# ── 运行参数（盒子自动生成运行界面，when 联动显隐） ──
+[[bmscriptsbox.params]]
+name = "mode"
+type = "str"
+default = "smart"
+choices = ["smart", "second", "frame", "timestamp", "keyframe"]
+choice_labels = { smart="智能", second="按秒", frame="按帧",timestamp="按时间",keyframe="关键帧" } 
+label = "抽帧方式"
+description = "抽帧方式"
+
+[[bmscriptsbox.params]]
+name = "interval"
+type = "int"
+default = 5
+when = { field = "mode", in = ["second", "frame"] }
+label = "抽帧间隔"
+
+
+[[bmscriptsbox.params]]
+name = "timestamps"
+type = "str"
+when = { field = "mode", eq = "timestamp" }
+label = "指定时间"
+description = "格式:00:00:05,00:00:15"
+
+[[bmscriptsbox.params]]
+name = "threshold"
+type = "str"
+default = "0.78"
+choices = ["0.5", "0.6", "0.65", "0.7", "0.75", "0.78", "0.8", "0.85", "0.9", "0.95"]
+when = { field = "mode", eq = "smart" }
+label="相似阈值"
+description = "画面相似度阈值"
+
+[[bmscriptsbox.params]]
+name = "smart_refine"
+type = "bool"
+default = false
+when = { field = "mode", eq = "smart" }
+label = "文字检测"
+description = "检测画面上文字"
+
+[[bmscriptsbox.params]]
+name = "smart_open_eyes"
+type = "bool"
+default = false
+when = { field = "mode", eq = "smart" }
+label = "仅睁眼帧"
+description = "仅睁眼帧"
+
+[[bmscriptsbox.params]]
+name = "smart_start"
+type = "str"
+default = ""
+when = { field = "mode", eq = "smart" }
+label = "起始时间"
+description = "为空则从头抽、格式为秒、例：10"
+
+[[bmscriptsbox.params]]
+name = "output_dir"
+type = "str"
+default = ""
+label = "输出目录"
+description = "为空则输出到源视频目录下"
+
+[[bmscriptsbox.params]]
+name = "overwrite"
+type = "bool"
+default = false
+label = "覆盖文件"
+description = "覆盖文件"
+
+# 自动生成运行界面
+[bmscriptsbox.params_form]
+enabled = true
+
+# 节点：允许被其他脚本联动调用
+[bmscriptsbox.node]
+enabled = true
+
+[[bmscriptsbox.outputs]]
+name = "result"
+type = "str"
+description = "处理结果摘要，如「成功 3 个 · 失败 1 个」"
+
+[[bmscriptsbox.outputs]]
+name = "output_dirs"
 type = "list"
-exts = [".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".ts", ".m4v",
-        ".mpg", ".mpeg", ".m2ts", ".mts", ".3gp", ".ogv", ".vob", ".rmvb", ".rm", ".asf"]
+description = "生成的帧图片目录绝对路径列表（<视频名>_frames）"
+
+# 定时任务：允许无人值守调度
+[bmscriptsbox.schedule]
+enabled = true

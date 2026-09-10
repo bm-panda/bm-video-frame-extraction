@@ -1,6 +1,8 @@
 """视频抽帧 - 从视频中抽取帧保存为 PNG 图片
-惰性配置：右键选中视频时若未配置则先弹窗引导，配置后自动保存；已配置则直接抽帧
-支持：智能 / 按秒 / 固定间隔帧 / 指定时间点 / 关键帧
+配置由盒子自动生成运行界面(params_form)提供，支持三种触发模式：
+  manual    右键/快捷键/卡片运行 → 控制台显示进度，倒计时退出
+  scheduled 定时任务 → 无人值守，可选写信封上报结果
+  node      被其他脚本联动调用 → 写结果信封到 output_json 后退出
 """
 
 import importlib.util
@@ -13,12 +15,11 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 BASE_DIR = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
-CONFIG_TEMPLATE = BASE_DIR / "config.html"
-APP_DATA_MARKER = "/*__APP_DATA__*/"
 
 # ── 抽帧模式定义 ──
 ALLOWED_MODES = {"second", "frame", "timestamp", "keyframe", "smart"}
@@ -32,9 +33,6 @@ MODE_LABELS = {
 }
 MODES = {k: MODE_LABELS[k] for k in MODE_ORDER}
 
-# 各模式可选参数（GUI 下拉选项）
-ALLOWED_SECOND_INTERVALS = [1, 2, 3, 5, 10, 15, 30, 60]
-ALLOWED_FRAME_INTERVALS = [5, 10, 12, 15, 25, 30, 60, 120, 240]
 # 智能抽帧相似度阈值（与上一张已存帧比较，越高保留帧越多）
 ALLOWED_SMART_THRESHOLDS = [0.5, 0.6, 0.65, 0.7, 0.75, 0.78, 0.8, 0.85, 0.9, 0.95]
 
@@ -42,17 +40,110 @@ VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv", ".ts", ".
               ".mpg", ".mpeg", ".m2ts", ".mts", ".3gp", ".ogv", ".vob", ".rmvb", ".rm", ".asf"}
 IMAGE_FORMAT = "png"
 
-DEFAULT_CONFIG = {
-    "mode": "second",
-    "interval": "5",
-    "timestamps": "00:00:05,00:00:15,00:01:00",
-    "threshold": "0.78",
-    "output_dir": "",
-    "overwrite": False,
-    "smart_refine": False,
-    "smart_open_eyes": False,
-    "smart_start": "",
-}
+
+@dataclass
+class Config:
+    """抽帧配置（默认值单一来源，字段与盒子 params 声明一一对应）。"""
+    mode: str = "second"
+    interval: int = 5
+    timestamps: str = "00:00:05,00:00:15,00:01:00"
+    threshold: str = "0.78"
+    smart_refine: bool = False
+    smart_open_eyes: bool = False
+    smart_start: str = ""
+    output_dir: str = ""
+    overwrite: bool = False
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Config":
+        """从盒子 params 段构建：只收合法类型，缺失/非法兜底默认。"""
+        cfg = cls()
+        if not isinstance(data, dict):
+            return cfg
+        if isinstance(data.get("mode"), str) and data["mode"] in ALLOWED_MODES:
+            cfg.mode = data["mode"]
+        interval = data.get("interval")
+        if isinstance(interval, (int, float)) or isinstance(interval, str):
+            try:
+                cfg.interval = max(1, int(float(interval)))
+            except (TypeError, ValueError):
+                pass
+        for k in ("timestamps", "threshold", "smart_start", "output_dir"):
+            if isinstance(data.get(k), str):
+                setattr(cfg, k, data[k])
+        for k in ("smart_refine", "smart_open_eyes", "overwrite"):
+            if isinstance(data.get(k), bool):
+                setattr(cfg, k, data[k])
+        return cfg
+
+
+# ==================== 基础设施工具 ====================
+def fix_encoding():
+    """统一输出编码，避免 GBK 控制台下 emoji/中文报错（盒子环境已设 PYTHONUTF8=1）。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+def get_version() -> str:
+    """读取脚本版本号（单一来源 bm-scripts-box-rc.toml，不硬编码）。"""
+    try:
+        for line in (BASE_DIR / "bm-scripts-box-rc.toml").read_text(encoding="utf-8").splitlines():
+            if line.strip().startswith("version"):
+                return line.split("=", 1)[1].strip().strip('"')
+    except OSError:
+        pass
+    return ""
+
+
+def title() -> str:
+    v = get_version()
+    return f"🎞️ 视频抽帧{(' v' + v) if v else ''} · 按需抽取视频帧"
+
+
+def print_banner(text: str):
+    """打印装饰标题（按显示宽度自适应，纯 Unicode 零依赖）。"""
+    width = sum(2 if ord(ch) > 0x2E7F else 1 for ch in text) + 4
+    bar = "─" * width
+    print(f"┌{bar}┐\n│  {text}  │\n└{bar}┘")
+
+
+def print_section(text: str):
+    print(f"── {text} " + "─" * 22)
+
+
+def countdown_exit(seconds: int = 5):
+    """批量处理结束后的倒计时退出：进度条实时刷新，按任意键立即退出。"""
+    width = 10
+    try:
+        import msvcrt
+        has_key = True
+    except ImportError:
+        has_key = False
+    for i in range(seconds, 0, -1):
+        if has_key and msvcrt.kbhit():
+            break
+        filled = round(width * (seconds - i + 1) / seconds)
+        bar = "█" * filled + "░" * (width - filled)
+        # flush=True：`end=""` 不换行，块缓冲下会积压到退出才一次性输出
+        print(f"\r  ⏳ {i}s {bar}  按任意键立即退出", end="", flush=True)
+        time.sleep(1)
+    print("\r" + " " * 60 + "\r  👋 已退出", flush=True)
+    sys.exit(0)
+
+
+def pause_exit(message: str = "按任意键退出"):
+    """无参引导/未执行任务时：暂停等待按键后退出（不倒计时）。"""
+    try:
+        import msvcrt
+        print(f"\n  {message}...", end="", flush=True)
+        msvcrt.getch()
+    except ImportError:
+        input(f"\n  {message}...")
+    print("\r  👋 已退出")
+    sys.exit(0)
 
 
 class FrameExtractor:
@@ -79,36 +170,31 @@ class FrameExtractor:
             raise FileNotFoundError("未找到 FFmpeg（ffmpeg 命令），请确认已安装并在环境变量中")
         return ffmpeg
 
-    def __init__(self, videos, config):
+    def __init__(self, videos, config: Config):
         self.videos = videos
-        self.output_dir = str(config.get("output_dir") or "").strip()
+        self.output_dir = config.output_dir.strip()
 
-        # 非法参数值回退默认
-        self.mode = config.get("mode") if config.get("mode") in ALLOWED_MODES else "second"
+        self.mode = config.mode if config.mode in ALLOWED_MODES else "second"
+        self.interval = config.interval
         try:
-            self.interval = max(1, int(float(config.get("interval"))))
+            threshold = float(config.threshold)
         except (TypeError, ValueError):
-            self.interval = 5
+            threshold = 0.78
+        self.threshold = threshold if threshold in ALLOWED_SMART_THRESHOLDS else 0.78
         try:
-            self.threshold = float(config.get("threshold"))
-        except (TypeError, ValueError):
-            self.threshold = 0.78
-        if self.threshold not in ALLOWED_SMART_THRESHOLDS:
-            self.threshold = 0.78
-        try:
-            self.start_time = max(0.0, float(config.get("smart_start")))
+            self.start_time = max(0.0, float(config.smart_start or "0"))
         except (TypeError, ValueError):
             self.start_time = 0.0
-        self.refine = bool(config.get("smart_refine"))
-        self.open_eyes = bool(config.get("smart_open_eyes"))
+        self.refine = bool(config.smart_refine)
+        self.open_eyes = bool(config.smart_open_eyes)
         if self.mode == "timestamp":
             try:
-                self.timestamps = self._parse_timestamps(config.get("timestamps"))
+                self.timestamps = self._parse_timestamps(config.timestamps)
             except ValueError:
                 self.timestamps = []
         else:
             self.timestamps = []
-        self.overwrite = bool(config.get("overwrite"))
+        self.overwrite = bool(config.overwrite)
 
         self._ffmpeg = self._ffmpeg_bin()
         self._ffprobe = shutil.which("ffprobe")
@@ -411,7 +497,7 @@ class FrameExtractor:
     def extract(self, on_start=None, on_progress=None, on_done=None):
         """逐文件顺序抽帧（解码密集型，单线程进度清晰）。
 
-        回调均为展示用，由 Cli 提供：on_start(路径) 开始前、on_progress(百分比, 已编码时间) 实时、
+        回调均为展示用：on_start(路径) 开始前、on_progress(百分比, 已编码时间) 实时、
         on_done(路径, 状态, 详情) 每文件完成。返回每文件结果列表，供无回调消费方使用。
         """
         results = []
@@ -423,261 +509,73 @@ class FrameExtractor:
         return results
 
 
-class Gui:
-    """webview-cli 配置窗口（含配置的读写与校验）。"""
+class App:
+    """应用编排：解析配置 → 批量抽帧 → 按触发模式退出/写信封。"""
+
+    def __init__(self, invoke_mode: str = "manual", output_json: Optional[str] = None):
+        self.invoke_mode = invoke_mode
+        self.output_json = output_json
 
     @staticmethod
-    def _render(data):
-        """读取 HTML 模板并注入 APP_DATA（常量单一来源在 Python）。"""
-        payload = json.dumps(data, ensure_ascii=False).replace("</", "<\\/")
-        html = CONFIG_TEMPLATE.read_text(encoding="utf-8")
-        return html.replace(APP_DATA_MARKER, f"const APP_DATA = {payload};")
-
-    @staticmethod
-    def _webview_bin():
-        webview = shutil.which("webview-cli") or shutil.which("webview")
-        if not webview:
-            raise FileNotFoundError(
-                "未找到 webview-cli，请确认已安装并加入 PATH\n"
-                "https://github.com/just-be-dev/webview-cli"
-            )
-        return webview
-
-    @staticmethod
-    def _validate(data):
-        """对配置窗口返回的数据做校验（镜像 HTML 里的 JS 规则），返回规范化后的 dict。"""
-        if not isinstance(data, dict):
-            raise ValueError("返回的数据格式无效")
-        mode = str(data.get("mode") or "").strip()
-        if mode not in MODES:
-            raise ValueError(f"无效的抽取方式：{mode}")
-
-        timestamps = str(data.get("timestamps") or "").strip()
-        if mode in ("second", "frame"):
-            try:
-                interval = int(float(data.get("interval")))
-            except (ValueError, TypeError):
-                raise ValueError("间隔必须为不小于 1 的数字")
-            if interval < 1:
-                raise ValueError("间隔必须为不小于 1 的数字")
-        elif mode == "timestamp":
-            raw = timestamps.replace("，", ",").strip()
-            parts = [x.strip() for x in raw.split(",") if x.strip()]
-            if not parts:
-                raise ValueError("请填写至少一个时间点")
-            for p in parts:
-                try:
-                    FrameExtractor._to_seconds(p)
-                except ValueError:
-                    raise ValueError(f"无效的时间格式：{p}")
-            timestamps = ",".join(parts)
-
-        if mode == "smart":
-            try:
-                threshold = float(data.get("threshold"))
-            except (ValueError, TypeError):
-                raise ValueError("相似度阈值无效")
-            if threshold not in ALLOWED_SMART_THRESHOLDS:
-                raise ValueError(f"不支持的相似度阈值：{data.get('threshold')}")
-            start = str(data.get("smart_start") or "").strip()
-            if start:
-                try:
-                    if float(start) < 0:
-                        raise ValueError("起始时间不能为负数")
-                except ValueError:
-                    raise ValueError("起始时间必须为不小于 0 的数字")
-
-        data.update(
-            mode=mode,
-            interval=str(data.get("interval") or "5"),
-            timestamps=timestamps,
-            threshold=str(data.get("threshold") or "0.78"),
-            output_dir=str(data.get("output_dir") or "").strip(),
-            overwrite=bool(data.get("overwrite")),
-            smart_refine=bool(data.get("smart_refine")),
-            smart_open_eyes=bool(data.get("smart_open_eyes")),
-            smart_start=str(data.get("smart_start") or "").strip(),
-        )
-        return data
-
-    @staticmethod
-    def load_config():
-        """读取配置；缺失/损坏/非法返回 None（触发首次引导）。"""
-        try:
-            data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        return data if data.get("mode") in MODES else None
-
-    @staticmethod
-    def save_config(data):
-        CONFIG_PATH.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-    def ask(self):
-        """打开配置窗口，返回校验后的配置 dict；取消/出错返回 None。"""
-        webview = self._webview_bin()
-        data = {"saved": self.load_config() or {}, "DEFAULTS": DEFAULT_CONFIG,
-                "MODES": MODES,
-                "ALLOWED_SECOND_INTERVALS": ALLOWED_SECOND_INTERVALS,
-                "ALLOWED_FRAME_INTERVALS": ALLOWED_FRAME_INTERVALS,
-                "ALLOWED_SMART_THRESHOLDS": ALLOWED_SMART_THRESHOLDS}
-        html = self._render(data)
-        cmd = [webview, "--title", "视频抽帧 - 配置窗口", "--width", "500", "--height", "720"]
-        try:
-            proc = FrameExtractor._run(cmd, input=html, capture_output=True)
-        except (OSError, ValueError):
-            # stdin 管道不可用时回退到临时 HTML 文件
-            fd, path = tempfile.mkstemp(suffix=".html", prefix="video-frame-webview-")
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(html)
-                proc = FrameExtractor._run(cmd + [path], input="", capture_output=True)
-            finally:
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
-        if proc.returncode:
-            return None  # 取消(2) / 出错
-        try:
-            payload = json.loads(proc.stdout)
-        except ValueError:
-            print("配置窗口返回的数据无法解析")
-            return None
-        try:
-            return self._validate(payload)
-        except (ValueError, TypeError) as e:
-            print(f"配置校验失败：{e}")
-            return None
-
-
-class Cli:
-    """批处理命令行流程（含盒子参数解析与输出编码修复）。"""
-
-    @staticmethod
-    def _fix_encoding():
-        # 统一输出编码，避免 GBK 控制台下 emoji/中文报错（盒子环境已设 PYTHONUTF8=1）
-        for _s in (sys.stdout, sys.stderr):
-            try:
-                _s.reconfigure(encoding="utf-8", errors="replace")
-            except (AttributeError, ValueError):
-                pass
-
-    @staticmethod
-    def _dw(text):
-        """近似显示宽度：CJK/全角/emoji 计 2，其余计 1（横幅自适应宽度用）。"""
-        return sum(2 if ord(ch) > 0x2E7F else 1 for ch in text)
-
-    @staticmethod
-    def _version():
-        try:
-            for line in (BASE_DIR / "bm-scripts-box-rc.toml").read_text(encoding="utf-8").splitlines():
-                if line.strip().startswith("version"):
-                    return line.split("=", 1)[1].strip().strip('"')
-        except OSError:
-            pass
-        return ""
-
-    @staticmethod
-    def _title():
-        v = Cli._version()
-        return f"🎞️ 视频抽帧{(' v' + v) if v else ''} · 按需抽取视频帧"
-
-    @staticmethod
-    def _banner(text):
-        w = Cli._dw(text) + 4
-        bar = "─" * w
-        print("┌" + bar + "┐")
-        print("│  " + text + "  │")
-        print("└" + bar + "┘")
-
-    @staticmethod
-    def _section(title):
-        print(f"── {title} " + "─" * 22)
-
-    @staticmethod
-    def _mode_summary(config):
+    def _mode_summary(config: Config) -> str:
         """抽取方式摘要（配置分节说明用）。"""
-        mode = config.get("mode")
+        mode = config.mode
         if mode == "second":
-            return f"按秒抽帧 (每 {config.get('interval', '5')} 秒一帧)"
+            return f"按秒抽帧 (每 {config.interval} 秒一帧)"
         if mode == "frame":
-            return f"固定间隔帧 (每 {config.get('interval', '5')} 帧一帧)"
+            return f"固定间隔帧 (每 {config.interval} 帧一帧)"
         if mode == "timestamp":
-            count = len([p for p in str(config.get("timestamps", "")).split(",") if p.strip()])
+            count = len([p for p in str(config.timestamps).split(",") if p.strip()])
             return f"指定时间点 ({count} 个)"
         if mode == "keyframe":
             return "关键帧 (全部 I 帧)"
         if mode == "smart":
-            summary = f"智能抽帧 (阈值 {config.get('threshold', '0.78')})"
+            summary = f"智能抽帧 (阈值 {config.threshold})"
             extras = []
-            if config.get("smart_refine"):
+            if config.smart_refine:
                 extras.append("幻灯片文字检测")
-            if config.get("smart_open_eyes"):
+            if config.smart_open_eyes:
                 extras.append("仅睁眼帧")
-            if str(config.get("smart_start", "")).strip():
-                extras.append(f"起始 {config.get('smart_start')} 秒")
+            if str(config.smart_start).strip():
+                extras.append(f"起始 {config.smart_start} 秒")
             if extras:
                 summary += " · " + " / ".join(extras)
             return summary
         return MODE_LABELS.get(mode, str(mode))
 
-    @staticmethod
-    def get_path(param_path):
-        """读取盒子传入的参数 JSON，返回存在的文件路径列表。"""
-        try:
-            with open(param_path, "r", encoding="utf-8") as f:
-                params = json.load(f)
-        except Exception:
-            return []
-        return [p for p in params.get("data", {}).get("target_paths", []) if Path(p).exists()]
+    def process(self, videos, skipped, config: Config) -> Dict[str, Any]:
+        """批量抽帧并输出控制台分节；返回统计信息（供信封）。"""
+        stats = {"ok": 0, "fail": 0, "skip": 0, "output_dirs": []}
+        if not videos:
+            print_banner(title())
+            print()
+            print("  ❌ 未选择有效的视频文件")
+            return stats
 
-    def __init__(self):
-        self.gui = Gui()
-
-    def run(self, video_paths):
-        # 先定位 ffmpeg（缺则直接报错），避免打印到一半才失败
-        FrameExtractor._ffmpeg_bin()
-        self._banner(self._title())
+        print_banner(title())
         print()
 
-        videos, skipped = [], []
-        for p in video_paths:
-            if Path(p).suffix.lower() in VIDEO_EXTS:
-                videos.append(p)
-            else:
-                skipped.append(p)
         if skipped:
-            self._section("扫描")
+            print_section("扫描")
             for p in skipped:
                 print(f"  ⏭️ 忽略非视频: {Path(p).name}")
-        if not videos:
-            print("  ❌ 未选择有效的视频文件")
-            self._exit()
-            return
-
-        self._section("配置")
-        config = Gui.load_config()
-        if config is None:
-            print("  📋 首次使用，请配置抽帧参数...")
-            config = self.gui.ask()
-            if config is None:
-                print("  已取消抽取")
-                self._exit()
-                return
-            Gui.save_config(config)
-            print("  ✅ 抽帧配置已保存，开始抽帧")
-        else:
-            print("  💾 使用已保存的配置")
+        print_section("配置")
         print(f"  方式: {self._mode_summary(config)} · 共 {len(videos)} 个文件")
 
-        self._section("处理")
-        extractor = FrameExtractor(videos, config)
+        print_section("处理")
+        try:
+            extractor = FrameExtractor(videos, config)
+        except FileNotFoundError as e:
+            # 缺 FFmpeg：逐文件温和报错，不崩溃
+            for p in videos:
+                print(f"  ❌ {Path(p).name}  {e}")
+            stats["fail"] = len(videos)
+            print_section("结果")
+            print(f"  ❌ 失败 {stats['fail']} 个")
+            return stats
+
         total = len(videos)
         started = [0]
-        ok = fail = skip = 0
 
         def on_start(path):
             started[0] += 1
@@ -688,64 +586,106 @@ class Cli:
             print(f"\r{line}   已编码 {time_str}", end="", flush=True)
 
         def on_done(path, status, info):
-            nonlocal ok, fail, skip
             print("\r" + " " * 60 + "\r", end="")  # 清掉实时进度行
             name = Path(path).name
             if status == "success":
-                ok += 1
+                stats["ok"] += 1
+                stats["output_dirs"].append(extractor._get_output_dir(path))
                 print(f"  ✅ {name}  {info}")
             elif status == "skipped":
-                skip += 1
+                stats["skip"] += 1
                 print(f"  ⏭️ {name}  {info}")
             else:
-                fail += 1
+                stats["fail"] += 1
                 print(f"  ❌ {name}  {(info or '未知错误').strip().splitlines()[0]}")
 
         extractor.extract(on_start=on_start, on_progress=on_progress, on_done=on_done)
 
-        self._section("结果")
-        line = (f"✅ 成功 {ok} 个 · ❌ 失败 {fail} 个" if fail
-                else f"✅ 全部完成 {ok} 个文件")
-        if skip:
-            line += f" · ⏭️ 跳过 {skip} 个"
+        print_section("结果")
+        line = (f"✅ 成功 {stats['ok']} 个 · ❌ 失败 {stats['fail']} 个" if stats["fail"]
+                else f"✅ 全部完成 {stats['ok']} 个文件")
+        if stats["skip"]:
+            line += f" · ⏭️ 跳过 {stats['skip']} 个"
         print("  " + line)
         print()
-        self._exit()
+        return stats
 
-    @staticmethod
-    def _exit():
-        width, total = 10, 5
-        for i in range(total, 0, -1):
-            filled = round(width * (total - i + 1) / total)
-            bar = "█" * filled + "░" * (width - filled)
-            print(f"\r  ⏳ {i}s {bar}  按任意键立即退出", end="")
-            time.sleep(1)
-        print("\r" + " " * 60, end="\r")
-        print("  👋 已退出")
-        sys.exit(0)
+    def write_envelope(self, stats: Dict[str, Any]):
+        """写结果信封（节点/定时任务，或手动带 output_json 时）。"""
+        if not self.output_json:
+            return
+        if not any(stats.get(k) for k in ("ok", "fail", "skip")):
+            code, msg = 1, "未选择有效的视频文件"
+        elif stats["fail"] and not stats["ok"] and not stats["skip"]:
+            code, msg = 1, f"全部失败 {stats['fail']} 个"
+        else:
+            code = 0
+            msg = (f"成功 {stats['ok']} 个 · 失败 {stats['fail']} 个" if stats["fail"]
+                   else f"全部完成 {stats['ok']} 个文件")
+            if stats["skip"]:
+                msg += f" · 跳过 {stats['skip']} 个"
+        envelope = {"code": code, "msg": msg, "result": msg,
+                    "output_dirs": stats.get("output_dirs", [])}
+        with open(self.output_json, "w", encoding="utf-8") as f:
+            json.dump(envelope, f, ensure_ascii=False, indent=2)
 
 
 def main():
-    Cli._fix_encoding()
-    param_path = sys.argv[1] if len(sys.argv) > 1 else None
+    fix_encoding()
+    if len(sys.argv) < 2:
+        # 无参启动：引导说明，暂停退出（不倒计时）
+        print_banner(title())
+        print()
+        print("  📌 使用说明")
+        print("  ── 请先选中视频文件，再按以下方式启动 ──")
+        print()
+        print("   ① 在文件管理器中选中一个或多个视频文件")
+        print("   ② 右键点击 → 选择「视频抽帧」")
+        print("   ③ 或选中文件后按下为脚本设置的全局快捷键")
+        print()
+        print("  🔔 启动后会自动弹出配置窗口，确认即可一键抽帧")
+        print()
+        pause_exit()
+        return
+
     try:
-        if param_path:
-            paths = Cli.get_path(param_path)
-            if not paths:
-                print("未获取到有效的视频文件路径")
-                time.sleep(2)
-            else:
-                Cli().run(paths)
-        else:
-            Cli._banner(Cli._title())
-            config = Gui().ask()
-            if config is not None:
-                Gui.save_config(config)
-            print(("  ✅ 抽帧配置已保存" if config else "  未保存抽帧配置") + "\n")
-            time.sleep(2)
-    except FileNotFoundError as e:
-        print(f"❌ {e}")
-        time.sleep(3)
+        with open(sys.argv[1], "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, ValueError):
+        print("❌ 无法读取盒子参数文件")
+        time.sleep(2)
+        return
+
+    env = payload.get("environment", {})
+    invoke = env.get("invoke_mode", "manual")
+    config = Config.from_dict(payload.get("params", {}))
+
+    videos, skipped = [], []
+    for p in payload.get("data", {}).get("target_paths", []):
+        if not Path(p).exists():
+            continue
+        (videos if Path(p).suffix.lower() in VIDEO_EXTS else skipped).append(p)
+
+    app = App(invoke, env.get("output_json"))
+    try:
+        stats = app.process(videos, skipped, config)
+    except Exception as e:
+        text = f"处理失败：{e}"
+        print(f"❌ {text}")
+        if app.output_json:
+            with open(app.output_json, "w", encoding="utf-8") as f:
+                json.dump({"code": 1, "msg": text, "result": text, "output_dirs": []},
+                          f, ensure_ascii=False, indent=2)
+        if invoke == "manual":
+            pause_exit()
+        sys.exit(1)
+
+    app.write_envelope(stats)
+    if invoke in ("node", "scheduled"):
+        return  # 无人值守：自然退出，不倒计时
+    if not videos:
+        pause_exit()  # 手动模式无文件：引导后暂停
+    countdown_exit()
 
 
 if __name__ == "__main__":
